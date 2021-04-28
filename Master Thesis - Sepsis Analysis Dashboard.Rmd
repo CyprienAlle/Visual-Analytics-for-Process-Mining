@@ -1,0 +1,527 @@
+---
+title: "Sepsis Analysis Dashboard"
+runtime: shiny
+output: 
+  flexdashboard::flex_dashboard:
+    orientation: columns
+    vertical_layout: fill
+---
+
+```{r setup, include=FALSE}
+#Additional information about this prototype can be found on: 
+
+library(flexdashboard)
+library(bupaR)
+library(heuristicsmineR)
+library(shiny)
+library(DiagrammeR)
+library(DT)
+library(tibble)
+
+#Setup the initial values for the select inputs
+initial_resources <- resources(sepsis)$resource
+initial_activities <- activities(sepsis)$activity
+filter_criteria <- colnames(sepsis)[6:32] #Only include relevant columns for filters (e.g., case_id is not included)
+```
+
+```{r Setup the reactive DF}
+#Setup the reactive DF visualization aggregations are applied on
+Show_Relevant_DF <- reactive({
+  
+  Relevant_DF <- sepsis
+  
+  #Logic for resource aggregation
+  Relevant_DF$resource <- as.character(Relevant_DF$resource)
+  i = 0  
+  while(i < length(resource_aggregation$list)) {
+    i <- i + 1
+    if(!is.null(resource_aggregation$list[[i]])){
+      Relevant_DF <- within(Relevant_DF, {
+        f <- resource %in% resource_aggregation$list[[i]][c(-1)]
+        resource[f] <- resource_aggregation$list[[i]][[1]]
+      }) 
+    }
+  }
+  
+  #Logic for activity aggregation
+  i = 0
+  while(i < length(activity_aggregation$list)) {
+    i <- i + 1
+    if(!is.null(activity_aggregation$list[[i]])){
+      Relevant_DF %>% act_collapse(temp_name = activity_aggregation$list[[i]][c(-1)]) -> Relevant_DF
+      Relevant_DF$activity <- as.character(Relevant_DF$activity)
+      Relevant_DF <- within(Relevant_DF, {
+        f <- activity == "temp_name"
+        activity[f] <- activity_aggregation$list[[i]][[1]]
+        }) 
+      } 
+    }
+  
+  #Logic for filter based on select criteria 
+  i = 0
+  while(i < length(relevant_criteria$list)) {
+    i <- i + 1
+    if(!is.null(relevant_criteria$list[[i]])){
+      if(relevant_criteria$list[[i]][1] %in% c("age","crp")) {
+        temp_list <- Relevant_DF[ Relevant_DF[[relevant_criteria$list[[i]][1]]] %in% c(relevant_criteria$list[[i]][2]:relevant_criteria$list[[i]][3]), ]$case_id
+      } else {
+        temp_list <- Relevant_DF[ Relevant_DF[[relevant_criteria$list[[i]][1]]] %in% relevant_criteria$list[[i]][c(-1)], ]$case_id
+      }
+      #Check if the there are still relevant cases after the filters
+      if (dim(Relevant_DF)[1] == 0 | identical(temp_list,character(0))) {
+        #If no relevant cases are left after the filter, an "artificial" empty df is created to prevent errors
+        Relevant_DF <- sepsis %>% filter_activity(c()) 
+      } else {
+        Relevant_DF <- subset(Relevant_DF, case_id %in% temp_list)
+      }
+    } 
+  }
+
+  data <- Relevant_DF
+  
+})
+
+#Setup the reactive DF visualization are constructed on
+Show_Presented_DF <- reactive({
+  temp_df <- Show_Relevant_DF()
+  
+  if(!is.null(input$relevant_activities_presence)){
+     temp_df <- temp_df %>% filter_activity_presence(input$relevant_activities_presence)
+  }
+  
+  if(!is.null(input$relevant_resources_presence)){
+     temp_list <- temp_df[temp_df$resource %in% input$relevant_resources_presence,]$case_id
+     temp_df <- subset(temp_df, case_id %in% temp_list)
+  }
+  
+  temp_df %>% filter_activity(input$relevant_activities) %>% filter_resource(input$relevant_resources) -> Presented_DF
+  
+  data <- Presented_DF
+})
+```
+
+```{r Logic for submission of new filter criteria}
+#Logic for submission of new filter criteria
+relevant_criteria <- reactiveValues()
+observeEvent(input$submit_criteria,{
+  i <- 0
+  j <- 0
+  input_choices <- replace(input$relevant_criteria_choices,input$relevant_criteria_choices == "NA",NA)
+  #First check if a filter for this criteria was already made. If so the filter value is replaced
+  while (i < length(relevant_criteria$list)){
+    i <- i + 1
+    if(input$relevant_criteria == relevant_criteria$list[[i]][1]){
+        if (!is.null(input$relevant_criteria_choices)) {
+          relevant_criteria$list[[i]] <- isolate(c(input$relevant_criteria,input_choices))
+        } else {
+          #If a filter is saved without any values, it is removed from the list
+          relevant_criteria$list[[i]] <- NULL
+        }
+      j <- 1
+    }
+  }
+  #If no value is found, a new filter is added to the list
+  if(j == 0) {
+    if (!is.null(input$relevant_criteria_choices)) {
+        relevant_criteria$list[[length(relevant_criteria$list) + 1]]  <- isolate(c(input$relevant_criteria,input_choices))
+      }
+  }
+})
+```
+
+```{r Logic for submission of new resource aggregation}
+#Logic for submission of new resource aggregation
+resource_aggregation <- reactiveValues()
+
+observeEvent(input$submit_resource,{
+  #Add aggregation to aggregation list
+  resource_aggregation$list[[length(resource_aggregation$list) + 1]] <- isolate(c(input$resource_aggregation_name,input$resource_aggregation))
+  #Update select inputs with new resource list
+  updateSelectInput(session,"relevant_resources", choices = resources(Show_Relevant_DF())$resource, 
+                    selected = factor(append(as.character(resources(Show_Presented_DF())$resource),input$resource_aggregation_name)))
+  updateSelectInput(session,"relevant_resources_presence",
+                    choices = resources(Show_Relevant_DF())$resource)
+})
+```
+
+```{r Logic for submission of new activity aggregation}
+#Logic for submission of new activity aggregation
+activity_aggregation <- reactiveValues()
+
+observeEvent(input$submit_activity,{
+  #Add aggregation to aggregation list
+  activity_aggregation$list[[length(activity_aggregation$list) + 1]] <- isolate(c(input$activity_aggregation_name,input$activity_aggregation))
+  #Update select inputs with new activity list
+  updateSelectInput(session,"relevant_activities", choices = activities(Show_Relevant_DF())$activity, 
+                    selected = factor(append(as.character(activities(Show_Presented_DF())$activity),input$activity_aggregation_name)))
+  updateSelectInput(session,"relevant_activities_presence",
+                    choices = activities(Show_Relevant_DF())$activity)
+})
+```
+
+```{r Logic for reset button}
+#Logic for reset button
+observeEvent(input$reset,{
+  activity_aggregation$list <- NULL
+  resource_aggregation$list <- NULL
+  relevant_criteria$list <- NULL
+  updateSelectInput(session,"relevant_activities", choices = activities(sepsis)$activity, 
+                    selected = activities(sepsis)$activity)
+  updateSelectInput(session,"relevant_resources", choices = resources(sepsis)$resource, 
+                    selected = resources(sepsis)$resource)
+  updateSelectInput(session,"relevant_resources_presence",
+                    choices = resources(sepsis)$resource)
+  updateSelectInput(session,"relevant_activities_presence",
+                    choices = activities(sepsis)$activity)
+})
+```
+
+```{r Logic for the creation of the unrendered graph}
+#Logic for the creation of the unrendered graph,
+Create_Unrendered_Graph <- reactive ({
+  req(Show_Presented_DF())
+  req(!n_cases(Show_Presented_DF()) == 0)
+  #The unrendered version of the graph is created
+  temp_graph <- resource_map(Show_Presented_DF(),render = FALSE)
+  
+  #Logic for removing the Start/End Nodes from the graph
+  if(!input$include_ends) {
+    temp_graph <- temp_graph %>% clear_selection() %>% select_nodes(conditions = label == 'Start' | label == 'End') %>% delete_nodes_ws()
+  }
+  
+  data <- temp_graph
+  })
+
+#Logic for the application of various filters on the unrendered graph
+Create_Unrendered_Graph_With_Filters <- reactive ({
+  req(Create_Unrendered_Graph())
+  #The unrendered version of the graph is created
+  temp_graph <- Create_Unrendered_Graph()
+  
+  #Logic for filtering edges based on their weight
+  if(!is.null(input$edge_weight_filter_value)){
+    temp_graph <- temp_graph %>% clear_selection() %>% 
+      select_edges(conditions = as.numeric(label) < input$edge_weight_filter_value[1] | as.numeric(label) > input$edge_weight_filter_value[2]) 
+      if(!is.na(temp_graph %>% get_selection())){
+        temp_graph <- temp_graph %>% delete_edges_ws()
+      }
+  }
+  
+  data <- temp_graph
+})
+
+
+
+```
+
+```{r Logic for creating a table of all current active filters and aggregations including delete buttons}
+#Logic for creating a list of all current active filters and aggregations
+Create_Active_Filters_DF <- reactive ({
+  
+  df <- data.frame(Type = character(),
+                   Subject = character(),
+                   Value = character())
+
+  #Adding resource aggregations to the filter df
+  i <- 0 
+  while(i < length(resource_aggregation$list)){
+    i <- i + 1
+    temp_df <- data.frame("Resource Aggregation",resource_aggregation$list[[i]][1],paste(resource_aggregation$list[[i]][-1], collapse = ','))
+    names(temp_df) <- c("Type", "Subject", "Value")  
+    df <- rbind(df, temp_df)
+  }
+  
+  #Adding activity aggregations to the filter df
+  i <- 0 
+  while(i < length(activity_aggregation$list)){
+    i <- i + 1
+    temp_df <- data.frame("Activity Aggregation",activity_aggregation$list[[i]][1],paste(activity_aggregation$list[[i]][-1], collapse = ','))
+    names(temp_df) <- c("Type", "Subject", "Value")  
+    df <- rbind(df, temp_df)
+  }
+  
+  #Adding criteria filters to the filter df
+  i <- 0 
+  while(i < length(relevant_criteria$list)){
+    i <- i + 1
+    temp_df <- data.frame("Criteria Filters",relevant_criteria$list[[i]][1],paste(relevant_criteria$list[[i]][-1], collapse = ','))
+    names(temp_df) <- c("Type", "Subject", "Value")  
+    df <- rbind(df, temp_df)
+  }
+  
+  data <- df
+})
+
+shinyInput <- function(FUN, n, id, ...) {
+  vapply(seq_len(n), function(i){
+    as.character(FUN(paste0(id, i), ...))
+  }, character(1))
+}
+
+#Creating the active filter table including the delete buttons 
+Create_Active_Filters_DF_Final <- reactive({
+      tibble(
+      
+        Type = Create_Active_Filters_DF()$Type,
+        Subject = Create_Active_Filters_DF()$Subject,
+        Value = Create_Active_Filters_DF()$Value,
+        
+        Actions = shinyInput(
+          FUN = actionButton,
+          n = length(Create_Active_Filters_DF()$Type),
+          id = 'button_',
+          label = "Delete",
+          onclick = 'Shiny.setInputValue(\"delete_button\", this.id, {priority: \"event\"})'
+        )
+      )
+    })
+```
+
+```{r Logic for when a button is clicked in the active filter table}
+#Logic for when a button is clicked in the active filter table
+observeEvent(input$delete_button, {
+  
+  #Get number of the row where the button was clicked
+  Relevant_Row <- as.numeric(strsplit(input$delete_button, "_")[[1]][2])
+
+  #Assign data about filter to delete to a temporary variable
+  filter_to_delete <- c(Create_Active_Filters_DF_Final()[Relevant_Row,"Type"],Create_Active_Filters_DF_Final()[Relevant_Row,"Subject"])
+  
+  #As 3 types of aggregations/filters are included, the type of the row clicked needs to be checked
+  if (filter_to_delete$Type == "Resource Aggregation") {
+    i <- 0
+    while (i < length(resource_aggregation$list)){
+      i <- i + 1
+      if(filter_to_delete$Subject == resource_aggregation$list[[i]][1]){
+        resource_aggregation$list[[i]] <- NULL
+        temp_factor <- factor(setdiff(as.character(resources(Show_Relevant_DF())$resource),filter_to_delete$Subject))
+        updateSelectInput(session,"relevant_resources", choices = temp_factor, 
+                          selected = factor(setdiff(as.character(resources(Show_Presented_DF())$resource),filter_to_delete$Subject)))
+        updateSelectInput(session,"relevant_resources_presence",
+                          choices = temp_factor)
+      }
+    }
+  }
+  
+  if (filter_to_delete$Type == "Activity Aggregation") {
+    i <- 0
+    while (i < length(activity_aggregation$list)){
+      i <- i + 1
+      if(filter_to_delete$Subject == activity_aggregation$list[[i]][1]){
+         activity_aggregation$list[[i]]<- NULL
+         temp_factor <- factor(setdiff(as.character(activities(Show_Relevant_DF())$activity),filter_to_delete$Subject))
+         updateSelectInput(session,"relevant_activities", choices = temp_factor, 
+                           selected = factor(setdiff(as.character(activities(Show_Presented_DF())$activity),filter_to_delete$Subject)))
+         updateSelectInput(session,"relevant_activities_presence",
+                           choices = temp_factor)
+      }
+    }
+  }
+  
+  if (filter_to_delete$Type == "Criteria Filters") {
+    i <- 0
+    while (i < length(relevant_criteria$list)){
+      i <- i + 1
+      if(filter_to_delete$Subject == relevant_criteria$list[[i]][1]){
+        relevant_criteria$list[[i]] <- NULL
+      }
+    }
+  }
+  
+})
+```
+
+Sidebar {.sidebar}
+=====================================
+
+**Activity and Resource Filters**
+
+```{r Shiny Inputs for resource and activity filtering}
+#Shiny Inputs for resource and activity filtering
+selectInput("relevant_resources", label = "Resources:",
+            choices = initial_resources, multiple = TRUE, selected = initial_resources)
+selectInput("relevant_activities", label = "Activities:",
+            choices = initial_activities, multiple = TRUE)
+```
+
+**Criteria Specific Filters**
+
+```{r Shiny Inputs to filter based on specific criteria}
+#Shiny Inputs to filter based on specific criteria
+selectInput("relevant_criteria", label = "Select criteria to filter on:",
+            choices = filter_criteria)
+renderUI({
+  if (!is.null(input$relevant_criteria)){
+    if (input$relevant_criteria %in% c("age","crp")) {
+      sliderInput("relevant_criteria_choices", label = "Select criteria value range:",
+                  min = min(unique(sepsis[[input$relevant_criteria]]), na.rm = TRUE),
+                  max = max(unique(sepsis[[input$relevant_criteria]]), na.rm = TRUE),
+                  value = c(min(unique(sepsis[[input$relevant_criteria]]), na.rm = TRUE),max(unique(sepsis[[input$relevant_criteria]]), na.rm = TRUE)))
+    } else {
+          selectInput("relevant_criteria_choices", label = "Select criteria value:",
+                choices = unique(sepsis[[input$relevant_criteria]]), multiple = TRUE) 
+    }
+  }
+})
+actionButton("submit_criteria",label = "Submit filter")
+```
+
+**Activity and Resource Presence Filters**
+
+```{r Shiny Inputs for resource and activity presence filtering}
+#Shiny Inputs for resource and activity presence filtering
+selectInput("relevant_resources_presence", label = "Resources Presence:",
+            choices = initial_resources, multiple = TRUE)
+selectInput("relevant_activities_presence", label = "Activities Presence:",
+            choices = initial_activities, multiple = TRUE)
+```
+
+
+```{r Reset Button}
+actionButton("reset",label = "Reset filters & aggregations")
+```
+
+Main View
+=====================================  
+
+Column {data-width="650"}{.tabset}
+-----------------------------------------------------------------------
+
+### Social Network View {.no-padding}
+
+```{r Render Social Network}
+renderGrViz({
+  req(Create_Unrendered_Graph_With_Filters())
+  render_graph(Create_Unrendered_Graph_With_Filters())
+})
+```
+
+### Process Map View {.no-padding}
+
+```{r Render Process Map}
+renderGrViz({
+  req(Show_Presented_DF())
+  req(!n_cases(Show_Presented_DF()) == 0)
+  causal_net(Show_Presented_DF(), threshold = .7, all_connected = TRUE) %>% render_causal_net()
+})
+```
+
+
+Column {data-width="350"}
+-----------------------------------------------------------------------
+
+### Resource-Activity Matrix
+
+```{r Render Resource-activity matrix}
+renderPlot({
+  req(Show_Presented_DF())
+  Show_Presented_DF() %>% resource_involvement("resource-activity") %>% plot
+})
+```
+
+### Additional Settings {.no-title}
+
+```{r Shiny Input for edge weight filter}
+#Shiny Input for edge weight filter
+output$edge_weight_filter <- renderUI({
+  #req(Show_Presented_DF())
+  req(Create_Unrendered_Graph())
+  sliderInput("edge_weight_filter_value", label = "Select relevant edge weight:", 
+              min = 1, 
+              #max = n_cases(Show_Presented_DF()),
+              max = max(as.numeric(Create_Unrendered_Graph()$edges_df$label), na.rm = TRUE),
+              value = c(min(as.numeric(Create_Unrendered_Graph()$edges_df$label), na.rm = TRUE),
+                        max(as.numeric(Create_Unrendered_Graph()$edges_df$label), na.rm = TRUE)))})
+```
+
+```{r Shiny Input for resource aggregation}
+#Shiny Input for resource aggregation
+output$resource_aggregation_filter <- renderUI({
+  req(Show_Relevant_DF())
+  selectInput("resource_aggregation", label = "Select resources to aggregate:",
+            choices = resources(Show_Relevant_DF())$resource, multiple = TRUE) 
+}) 
+```
+
+```{r Shiny Input for activity aggregation}
+#Shiny Input for activity aggregation
+output$activity_aggregation_filter <- renderUI({
+  req(Show_Relevant_DF())
+  selectInput("activity_aggregation", label = "Select activities to aggregate:",
+            choices = activities(Show_Relevant_DF())$activity, multiple = TRUE) 
+})
+```
+
+```{r Tabset for filters and aggregations}
+tabsetPanel(
+    tabPanel("Social network view settings", 
+             checkboxInput("include_ends", label = "Include start/end nodes", value = TRUE, width = NULL),
+             uiOutput("edge_weight_filter")
+             ),
+    tabPanel("Resource aggregation", 
+             textInput("resource_aggregation_name", label = "New aggregated resource name",  value = "", width = NULL, placeholder = ""),
+             uiOutput("resource_aggregation_filter"),
+             actionButton("submit_resource",label = "Submit resource aggregation")
+             ),
+    tabPanel("Activity aggregation",
+             textInput("activity_aggregation_name", label = "New aggregated activity name",  value = "", width = NULL, placeholder = ""),
+             uiOutput("activity_aggregation_filter"),
+             actionButton("submit_activity",label = "Submit activity aggregation")
+             )
+  )
+```
+
+Additional Information
+=====================================     
+   
+Column 
+-------------------------------------
+
+### Filters and Aggregations
+
+```{r Rendering the active filters and aggregation table}
+#Rendering the active filters and aggregation table
+DT::renderDT({
+  req(Create_Active_Filters_DF_Final())
+      Create_Active_Filters_DF_Final()
+    }, escape = FALSE,
+      selection = 'none')
+```
+
+Column
+-------------------------------------
+   
+### Current number of cases
+
+```{r Number of cases Gauge}
+#Rendering the gauge displaying the number of cases
+renderGauge({
+  req(Show_Presented_DF())
+  max_value <- n_cases(sepsis)
+  first_value <- max_value/3
+  second_value <- 2*(max_value/3)
+  gauge(n_cases(Show_Presented_DF()), min = 0, max = max_value,
+        sectors = gaugeSectors(success = c(second_value,max_value),
+                               warning = c(first_value,second_value),
+                               danger = c(0,first_value),
+                               colors = c("#0F4A82","#135CA3","#1873CC")))
+})
+```   
+    
+### Current number of events
+
+```{r Number of events Gauge}
+#Rendering the gauge displaying the number of events
+renderGauge({
+  req(Show_Presented_DF())
+  max_value <- n_events(sepsis)
+  first_value <- max_value/3
+  second_value <- 2*(max_value/3)
+  gauge(n_events(Show_Presented_DF()), min = 0, max = n_events(sepsis),
+        sectors = gaugeSectors(success = c(second_value,max_value),
+                               warning = c(first_value,second_value),
+                               danger = c(0,first_value),
+                               colors = c("#0F4A82","#135CA3","#1873CC")))
+})
+```
+
