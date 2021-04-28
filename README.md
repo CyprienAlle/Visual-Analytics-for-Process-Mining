@@ -7,7 +7,7 @@ This repository contains the code for the solution developed for my master thesi
 
 ## Prerequisites
 ***
-First, to run this solution, R and RStudio (or another IDE) must be installed. Information on how to install them is available, respectively, on cran.rstudio.com and www. rstudio.com.
+First, to run this solution, R and RStudio (or another IDE) must be installed. Information on how to install them is available, respectively, on https://cran.rstudio.com/ and www.rstudio.com.
 
 ## Installation
 ***
